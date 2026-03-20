@@ -1,65 +1,74 @@
-import Image from "next/image";
+import Link from 'next/link'
 
 export default function Home() {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div className="min-h-screen flex flex-col items-center justify-center relative overflow-hidden">
+      {/* Background effects */}
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(0,255,133,0.03)_0%,_transparent_50%)] pointer-events-none" />
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-px bg-gradient-to-r from-transparent via-accent/20 to-transparent" />
+
+      <main className="z-10 flex flex-col items-center gap-8 max-w-3xl px-6 text-center">
+        {/* Logo */}
+        <div className="font-mono text-xs tracking-[0.3em] text-muted uppercase">
+          Command Center
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+
+        <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight text-foreground">
+          Social<span className="text-accent">Forge</span>
+        </h1>
+
+        <p className="text-lg md:text-xl text-muted max-w-xl leading-relaxed">
+          AI-powered content automation platform. Generate, approve, schedule,
+          and post across every major social network.
+        </p>
+
+        {/* Feature grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full mt-4">
+          <div className="card px-5 py-4 text-left">
+            <div className="font-mono text-[11px] tracking-wider uppercase text-accent mb-2">
+              01 — Generate
+            </div>
+            <p className="text-sm text-muted">
+              AI agent crafts platform-optimized content in seconds.
+            </p>
+          </div>
+          <div className="card px-5 py-4 text-left">
+            <div className="font-mono text-[11px] tracking-wider uppercase text-amber mb-2">
+              02 — Approve
+            </div>
+            <p className="text-sm text-muted">
+              Review, edit, and approve content before it goes live.
+            </p>
+          </div>
+          <div className="card px-5 py-4 text-left">
+            <div className="font-mono text-[11px] tracking-wider uppercase text-purple mb-2">
+              03 — Schedule
+            </div>
+            <p className="text-sm text-muted">
+              Schedule posts per platform with n8n-powered automation.
+            </p>
+          </div>
+        </div>
+
+        {/* CTA */}
+        <div className="flex items-center gap-3 mt-6">
+          <Link
+            href="/dashboard"
+            className="inline-flex items-center gap-2 px-8 py-3.5 bg-accent text-background font-mono text-sm tracking-wider uppercase border border-accent hover:bg-accent-dim transition-colors"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+            Open Dashboard →
+          </Link>
+          <Link
+            href="/generate"
+            className="inline-flex items-center gap-2 px-8 py-3.5 border border-border text-foreground font-mono text-sm tracking-wider uppercase hover:border-border-hover hover:bg-surface transition-colors"
           >
-            Documentation
-          </a>
+            Create Post
+          </Link>
         </div>
       </main>
+
+      {/* Bottom accent line */}
+      <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-[600px] h-px bg-gradient-to-r from-transparent via-border to-transparent" />
     </div>
-  );
+  )
 }
