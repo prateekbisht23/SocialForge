@@ -11,6 +11,7 @@ interface GenerateContentInput {
   brand_context?: string
   image_url?: string | null
   brand_reference_images?: string[]
+  creativity?: number
 }
 
 interface PlatformContent {
@@ -90,13 +91,17 @@ export async function generateWithClaude(
     brandRefImagesSection = `\n\nBrand reference images for visual style: ${input.brand_reference_images.join(', ')}`
   }
 
+  // Build creativity instruction
+  const creativity = input.creativity ?? 0.5
+  const creativityInstruction = `\n\nCreativity level: ${creativity}/1.0. At 0.0 be highly consistent and on-brand. At 1.0 be maximally experimental and unexpected.`
+
   const userPrompt = `IMPORTANT: You must respond with ONLY a JSON object. No other text before or after.
 
 Generate social media ${input.content_type === 'ad' ? 'ad copy' : 'posts'} for:
 - Topic: ${input.topic}
 ${toneInstruction}
 ${input.brand_context ? `- Brand context: ${input.brand_context}` : ''}
-- Platforms: ${input.platforms.join(', ')}${contentTypeInstruction}${brandVoiceSection}${brandRefImagesSection}
+- Platforms: ${input.platforms.join(', ')}${contentTypeInstruction}${brandVoiceSection}${brandRefImagesSection}${creativityInstruction}
 
 Platform rules:
 - LinkedIn: professional, ${input.content_type === 'ad' ? '50-100 words' : '150-300 words'}, 3-5 hashtags

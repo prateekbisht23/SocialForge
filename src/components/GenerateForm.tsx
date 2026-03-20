@@ -16,6 +16,7 @@ import {
   ImageIcon,
   Megaphone,
   PenTool,
+  Sliders,
 } from 'lucide-react'
 import ImageUpload from './ImageUpload'
 
@@ -27,6 +28,14 @@ const platforms: { value: Platform; label: string; icon: React.ElementType; colo
 ]
 
 const presetTones = ['Professional', 'Casual', 'Witty', 'Bold']
+
+function getCreativityLabel(val: number): string {
+  if (val <= 0.2) return 'Consistent  — stays close to your brand guidelines'
+  if (val <= 0.4) return 'Balanced    — reliable with subtle variation'
+  if (val <= 0.6) return 'Creative    — fresh angles, some experimentation'
+  if (val <= 0.8) return 'Adventurous — bold ideas, unexpected directions'
+  return 'Experimental — maximum range and versatility'
+}
 
 export interface GenerateFormData {
   content_type: 'post' | 'ad'
@@ -40,6 +49,8 @@ export interface GenerateFormData {
   imageFiles?: File[]
   imageDescription?: string
   brandRefFiles?: File[]
+  imageCount?: number
+  creativity?: number
 }
 
 interface GenerateFormProps {
@@ -77,6 +88,10 @@ export default function GenerateForm({
   const [imageFiles, setImageFiles] = useState<File[]>([])
   const [imagePreviews, setImagePreviews] = useState<string[]>([])
   const [imageDescription, setImageDescription] = useState('')
+  const [imageCount, setImageCount] = useState(1)
+
+  // Creativity
+  const [creativity, setCreativity] = useState(0.5)
 
   const togglePlatform = (p: Platform) => {
     setSelectedPlatforms((prev) =>
@@ -88,11 +103,9 @@ export default function GenerateForm({
   const handleImageFilesSelect = (file: File | null) => {
     if (!file) return
     if (contentType === 'ad') {
-      // Ad mode: single image only
       setImageFiles([file])
       setImagePreviews([URL.createObjectURL(file)])
     } else {
-      // Post mode: up to 10 images
       if (imageFiles.length >= 10) return
       setImageFiles((prev) => [...prev, file])
       setImagePreviews((prev) => [...prev, URL.createObjectURL(file)])
@@ -130,6 +143,12 @@ export default function GenerateForm({
     setBrandRefImages((prev) => prev.filter((_, i) => i !== index))
   }
 
+  // Determine if we're in AI description mode (post type, no files uploaded, description filled)
+  const showImageCountPicker =
+    contentType === 'post' &&
+    imageFiles.length === 0 &&
+    imageDescription.trim().length > 0
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!topic.trim() || selectedPlatforms.length === 0) return
@@ -144,6 +163,8 @@ export default function GenerateForm({
       imageFiles: imageFiles.length > 0 ? imageFiles : undefined,
       imageDescription: imageDescription.trim() || undefined,
       brandRefFiles: brandRefImages.length > 0 ? brandRefImages.map(i => i.file) : undefined,
+      imageCount: showImageCountPicker ? imageCount : 1,
+      creativity,
     })
   }
 
@@ -151,7 +172,7 @@ export default function GenerateForm({
 
   return (
     <form onSubmit={handleSubmit} className="w-full max-w-2xl mx-auto space-y-6">
-      {/* CHANGE 1: Content Type Toggle */}
+      {/* Content Type Toggle */}
       <div>
         <label className="font-label text-muted block mb-2">Content Type</label>
         <div className="flex gap-2">
@@ -175,7 +196,7 @@ export default function GenerateForm({
             id="content-type-ad"
             onClick={() => {
               setContentType('ad')
-              // Ad mode: trim to single image
+              setImageCount(1)
               if (imageFiles.length > 1) {
                 setImageFiles([imageFiles[0]])
                 setImagePreviews([imagePreviews[0]])
@@ -238,7 +259,7 @@ export default function GenerateForm({
         </div>
       </div>
 
-      {/* CHANGE 2: Tone selector with Custom */}
+      {/* Tone selector with Custom */}
       <div>
         <label className="font-label text-muted block mb-2">Tone</label>
         <div className="flex flex-wrap gap-2">
@@ -264,7 +285,6 @@ export default function GenerateForm({
         {/* Custom tone expanded section */}
         {tone === 'Custom' && (
           <div className="mt-3 p-4 border border-purple/20 bg-purple/5 space-y-4" style={{ animation: 'slide-up 0.2s ease-out' }}>
-            {/* Custom tone textarea */}
             <div>
               <label className="font-label text-muted block mb-1.5 text-[11px]">
                 Describe Your Tone
@@ -286,7 +306,6 @@ export default function GenerateForm({
               </div>
             </div>
 
-            {/* Brand voice doc upload */}
             <div>
               <label className="font-label text-muted block mb-1.5 text-[11px]">
                 Or Upload Brand Voice Doc
@@ -329,7 +348,40 @@ export default function GenerateForm({
         )}
       </div>
 
-      {/* CHANGE 3: Brand context (collapsible) with reference images */}
+      {/* CHANGE 3: Creative Range slider */}
+      <div>
+        <label className="font-label text-muted block mb-2">
+          <span className="flex items-center gap-2">
+            <Sliders size={12} />
+            Creative Range
+          </span>
+        </label>
+        <div className="p-4 border border-border bg-surface/30 space-y-3">
+          <input
+            id="creativity-slider"
+            type="range"
+            min="0"
+            max="1"
+            step="0.1"
+            value={creativity}
+            onChange={(e) => setCreativity(parseFloat(e.target.value))}
+            className="w-full h-1.5 appearance-none cursor-pointer bg-border rounded-none outline-none"
+            style={{
+              accentColor: 'var(--color-accent, #00FF85)',
+            }}
+          />
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-mono text-foreground/70 leading-tight">
+              {getCreativityLabel(creativity)}
+            </span>
+            <span className="text-[11px] font-mono text-accent font-semibold ml-2 shrink-0">
+              ({creativity.toFixed(1)})
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Brand context (collapsible) with reference images */}
       <div>
         <button
           type="button"
@@ -350,7 +402,6 @@ export default function GenerateForm({
               className="w-full px-4 py-3 bg-background border border-border text-foreground text-sm placeholder:text-muted/40 focus:border-accent/50 focus:outline-none transition-colors resize-none"
             />
 
-            {/* Brand reference images */}
             <div>
               <label className="font-label text-muted block mb-1 text-[11px]">
                 Brand Reference Images (Optional)
@@ -359,7 +410,6 @@ export default function GenerateForm({
                 Upload examples of your brand&apos;s existing content to guide the visual style
               </p>
 
-              {/* Thumbnails */}
               {brandRefImages.length > 0 && (
                 <div className="flex gap-2 mb-2 flex-wrap">
                   {brandRefImages.map((img, i) => (
@@ -436,6 +486,31 @@ export default function GenerateForm({
             imageDescription={imageDescription}
             previewUrl={null}
           />
+        )}
+
+        {/* CHANGE 2: Number of AI Image Variations picker */}
+        {showImageCountPicker && (
+          <div className="mt-3 p-3 border border-accent/15 bg-accent/5">
+            <label className="font-label text-muted block mb-2 text-[11px]">
+              Number of Image Variations
+            </label>
+            <div className="flex gap-2">
+              {[1, 2, 3, 4].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setImageCount(n)}
+                  className={`btn-press flex-1 py-2 border font-mono text-xs tracking-wider transition-all duration-200 cursor-pointer ${
+                    imageCount === n
+                      ? 'bg-accent/10 border-accent/30 text-accent'
+                      : 'border-border text-muted hover:text-foreground hover:border-border-hover'
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
         )}
       </div>
 

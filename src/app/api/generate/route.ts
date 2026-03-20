@@ -16,7 +16,9 @@ export async function POST(request: NextRequest) {
       platforms,
       brand_context,
       image_url,
+      image_urls,
       brand_reference_images,
+      creativity: rawCreativity,
     }: {
       post_id: string
       content_type: 'post' | 'ad'
@@ -27,7 +29,9 @@ export async function POST(request: NextRequest) {
       platforms: Platform[]
       brand_context?: string
       image_url?: string | null
+      image_urls?: string[] | null
       brand_reference_images?: string[] | null
+      creativity?: number | null
     } = body
 
     if (!topic || !tone || !platforms?.length) {
@@ -36,6 +40,9 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       )
     }
+
+    // Validate and clamp creativity (0.0-1.0)
+    const creativity = Math.max(0, Math.min(1, Number(rawCreativity ?? 0.5)))
 
     const startTime = Date.now()
 
@@ -50,6 +57,7 @@ export async function POST(request: NextRequest) {
       brand_context,
       image_url,
       brand_reference_images: brand_reference_images || undefined,
+      creativity,
     })
 
     const latency = Date.now() - startTime
@@ -68,8 +76,10 @@ export async function POST(request: NextRequest) {
         custom_tone: custom_tone || null,
         brand_voice_text: brand_voice_text || null,
         image_url: image_url || null,
+        image_urls: image_urls || [],
         brand_reference_images: brand_reference_images || null,
         platforms,
+        creativity,
         status: 'draft',
       })
       .select()
@@ -83,7 +93,9 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Create platform posts
+    // Create platform posts — use first image_url for all platforms
+    const primaryImageUrl = image_url || (image_urls && image_urls.length > 0 ? image_urls[0] : null)
+
     const platformPosts = platforms.map((platform) => {
       const content = result[platform]
       return {
@@ -91,7 +103,7 @@ export async function POST(request: NextRequest) {
         platform,
         caption: content?.caption || '',
         hashtags: content?.hashtags || [],
-        image_url: image_url || null,
+        image_url: primaryImageUrl,
         image_prompt: content?.image_prompt || null,
         status: 'pending' as const,
       }
@@ -113,7 +125,7 @@ export async function POST(request: NextRequest) {
     // Log the generation
     await supabase.from('generation_logs').insert({
       post_id: post.id,
-      prompt: `Topic: ${topic}, Tone: ${tone}, Type: ${content_type}, Platforms: ${platforms.join(', ')}`,
+      prompt: `Topic: ${topic}, Tone: ${tone}, Type: ${content_type}, Creativity: ${creativity}, Platforms: ${platforms.join(', ')}`,
       response: result,
       latency_ms: latency,
       status: 'success',

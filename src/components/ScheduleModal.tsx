@@ -1,9 +1,10 @@
 'use client'
 
-import { useState } from 'react'
-import { X, CalendarDays, Clock, Globe } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { X, CalendarDays, Globe } from 'lucide-react'
 import { PlatformPost } from '@/types'
 import PlatformBadge from './PlatformBadge'
+import ScrollWheelTimePicker from './ui/ScrollWheelTimePicker'
 
 interface ScheduleModalProps {
   post: PlatformPost
@@ -11,39 +12,40 @@ interface ScheduleModalProps {
   onConfirm: (postId: string, fireAt: string) => Promise<void>
 }
 
-function generateTimeSlots() {
-  const slots: string[] = []
-  for (let h = 0; h < 24; h++) {
-    for (let m = 0; m < 60; m += 15) {
-      const hh = h.toString().padStart(2, '0')
-      const mm = m.toString().padStart(2, '0')
-      slots.push(`${hh}:${mm}`)
-    }
-  }
-  return slots
-}
-
-const timeSlots = generateTimeSlots()
-
 export default function ScheduleModal({
   post,
   onClose,
   onConfirm,
 }: ScheduleModalProps) {
-  const tomorrow = new Date()
-  tomorrow.setDate(tomorrow.getDate() + 1)
-  const defaultDate = tomorrow.toISOString().split('T')[0]
-
-  const [date, setDate] = useState(defaultDate)
-  const [time, setTime] = useState('09:00')
+  // All date/time values are initialized in useEffect — no new Date() at render time
+  const [date, setDate] = useState('')
+  const [hours, setHours] = useState(0)
+  const [minutes, setMinutes] = useState(0)
   const [loading, setLoading] = useState(false)
-  const minDate = defaultDate // stable, no new Date() in render
-  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const [timezone, setTimezone] = useState('')
+  const [minDate, setMinDate] = useState('')
+
+  // Initialize defaults inside useEffect (fixes SSR hydration warning)
+  useEffect(() => {
+    const now = new Date()
+    // Default to today
+    const pad = (n: number) => n.toString().padStart(2, '0')
+    const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+    setDate(todayStr)
+    setMinDate(todayStr)
+    // Current time rounded to nearest minute
+    setHours(now.getHours())
+    setMinutes(now.getMinutes())
+    setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone)
+  }, [])
 
   const handleConfirm = async () => {
+    if (!date) return
     setLoading(true)
     try {
-      const fireAt = new Date(`${date}T${time}:00`).toISOString()
+      const hh = hours.toString().padStart(2, '0')
+      const mm = minutes.toString().padStart(2, '0')
+      const fireAt = new Date(`${date}T${hh}:${mm}:00`).toISOString()
       await onConfirm(post.id, fireAt)
       onClose()
     } catch (err) {
@@ -53,8 +55,14 @@ export default function ScheduleModal({
     }
   }
 
+  // Don't render picker until defaults are loaded (prevents flash)
+  if (!date) return null
+
   return (
-    <div className="fixed inset-0 z-50 modal-backdrop flex items-end sm:items-center justify-center p-4">
+    <div
+      className="fixed inset-0 z-50 modal-backdrop flex items-end sm:items-center justify-center p-4"
+      onClick={onClose}
+    >
       <div
         className="card w-full max-w-md animate-slide-up"
         onClick={(e) => e.stopPropagation()}
@@ -82,7 +90,7 @@ export default function ScheduleModal({
         </div>
 
         {/* Date & Time */}
-        <div className="px-5 py-5 space-y-4">
+        <div className="px-5 py-5 space-y-5">
           {/* Date picker */}
           <div>
             <label className="font-label text-muted block mb-2">Date</label>
@@ -93,34 +101,33 @@ export default function ScheduleModal({
               onChange={(e) => setDate(e.target.value)}
               min={minDate}
               className="w-full px-3 py-2.5 bg-background border border-border text-foreground font-mono text-sm focus:border-purple focus:outline-none transition-colors"
+              style={{ colorScheme: 'dark' }}
             />
           </div>
 
-          {/* Time picker */}
+          {/* Scroll wheel time picker */}
           <div>
-            <label className="font-label text-muted block mb-2">
-              <Clock size={12} className="inline mr-1" />
-              Time
-            </label>
-            <select
-              id="schedule-time"
-              value={time}
-              onChange={(e) => setTime(e.target.value)}
-              className="w-full px-3 py-2.5 bg-background border border-border text-foreground font-mono text-sm focus:border-purple focus:outline-none transition-colors appearance-none cursor-pointer"
-            >
-              {timeSlots.map((slot) => (
-                <option key={slot} value={slot}>
-                  {slot}
-                </option>
-              ))}
-            </select>
+            <label className="font-label text-muted block mb-2">Time</label>
+            <div className="border border-border bg-background p-2">
+              <ScrollWheelTimePicker
+                hours={hours}
+                minutes={minutes}
+                onHoursChange={setHours}
+                onMinutesChange={setMinutes}
+              />
+            </div>
+            <div className="mt-2 text-center font-mono text-sm text-accent">
+              {hours.toString().padStart(2, '0')}:{minutes.toString().padStart(2, '0')}
+            </div>
           </div>
 
           {/* Timezone */}
-          <div className="flex items-center gap-2 text-[11px] font-mono text-muted">
-            <Globe size={12} />
-            {timezone}
-          </div>
+          {timezone && (
+            <div className="flex items-center gap-2 text-[11px] font-mono text-muted">
+              <Globe size={12} />
+              {timezone}
+            </div>
+          )}
         </div>
 
         {/* Confirm */}

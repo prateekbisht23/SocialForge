@@ -9,7 +9,7 @@ import PlatformPostCard from '@/components/PlatformPostCard'
 import ScheduleModal from '@/components/ScheduleModal'
 import ViewPostModal from '@/components/ViewPostModal'
 import EditPostModal from '@/components/EditPostModal'
-import { ArrowLeft, Save, Sparkles } from 'lucide-react'
+import { ArrowLeft, Save, Sparkles, X as XIcon } from 'lucide-react'
 
 /**
  * Upload a file to the server-side /api/upload-image route.
@@ -37,7 +37,11 @@ export default function GeneratePage() {
   const [generatedPosts, setGeneratedPosts] = useState<PlatformPost[]>([])
   const [error, setError] = useState<string | null>(null)
 
-  // Modal state (reusing same components as dashboard)
+  // AI-generated image previews (multiple)
+  const [aiImageUrls, setAiImageUrls] = useState<string[]>([])
+  const [selectedAiImages, setSelectedAiImages] = useState<Set<number>>(new Set())
+
+  // Modal state
   const [schedulePost, setSchedulePost] = useState<PlatformPost | null>(null)
   const [viewPost, setViewPost] = useState<PlatformPost | null>(null)
   const [editPost, setEditPost] = useState<PlatformPost | null>(null)
@@ -46,42 +50,60 @@ export default function GeneratePage() {
     setLoading(true)
     setError(null)
     setGeneratedPosts([])
+    setAiImageUrls([])
+    setSelectedAiImages(new Set())
 
     try {
       const postId = crypto.randomUUID()
 
       // 1. Upload post image(s) via server-side route
       let permanentImageUrl: string | null = null
+      let allImageUrls: string[] = []
+
       if (data.imageFiles && data.imageFiles.length > 0) {
         setLoadingStatus('Uploading images...')
         const mainFile = data.imageFiles[0]
         const ext = mainFile.name.split('.').pop()
         permanentImageUrl = await uploadFile(mainFile, 'post-images', `${postId}.${ext}`)
+        allImageUrls.push(permanentImageUrl)
 
         for (let i = 1; i < data.imageFiles.length; i++) {
           const f = data.imageFiles[i]
           const fExt = f.name.split('.').pop()
-          await uploadFile(f, 'post-images', `${postId}-${i}.${fExt}`)
+          const url = await uploadFile(f, 'post-images', `${postId}-${i}.${fExt}`)
+          allImageUrls.push(url)
         }
       } else if (data.imageDescription && data.imageDescription.trim()) {
-        // No image file uploaded, but description filled → call AI image generation
-        setLoadingStatus('Generating image with AI...')
+        // AI image generation
+        const imgCount = data.imageCount || 1
+        setLoadingStatus(`Generating ${imgCount > 1 ? `${imgCount} images` : 'image'} with AI...`)
         const imgRes = await fetch('/api/generate-image', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: data.imageDescription.trim(), postId }),
+          body: JSON.stringify({
+            prompt: data.imageDescription.trim(),
+            postId,
+            imageCount: imgCount,
+          }),
         })
         if (imgRes.ok) {
-          const { image_url } = await imgRes.json()
-          permanentImageUrl = image_url
+          const imgData = await imgRes.json()
+          const urls: string[] = imgData.image_urls || (imgData.image_url ? [imgData.image_url] : [])
+          allImageUrls = urls
+          permanentImageUrl = urls[0] || null
+
+          // Show AI images for preview/selection
+          if (urls.length > 1) {
+            setAiImageUrls(urls)
+            setSelectedAiImages(new Set(urls.map((_, i) => i)))
+          }
         } else {
           const imgErr = await imgRes.json()
           console.warn('AI image generation failed:', imgErr.error)
-          // Continue without image — not a blocker
         }
       }
 
-      // 2. Upload brand reference images via server-side route
+      // 2. Upload brand reference images
       let brandReferenceUrls: string[] = []
       if (data.brandRefFiles && data.brandRefFiles.length > 0) {
         setLoadingStatus('Uploading brand assets...')
@@ -93,7 +115,7 @@ export default function GeneratePage() {
         }
       }
 
-      // 3. Streaming status messages
+      // 3. Status messages
       for (const platform of data.platforms) {
         setLoadingStatus(
           `AI is generating your ${platform.charAt(0).toUpperCase() + platform.slice(1)} ${data.content_type}...`
@@ -117,7 +139,9 @@ export default function GeneratePage() {
           platforms: data.platforms,
           brand_context: data.brand_context,
           image_url: permanentImageUrl,
+          image_urls: allImageUrls.length > 0 ? allImageUrls : null,
           brand_reference_images: brandReferenceUrls.length > 0 ? brandReferenceUrls : null,
+          creativity: data.creativity ?? 0.5,
         }),
       })
 
@@ -145,7 +169,7 @@ export default function GeneratePage() {
     }
   }
 
-  // Post actions — shared with dashboard
+  // Post actions
   const handleApprove = async (id: string) => {
     const res = await fetch('/api/posts/approve', {
       method: 'POST',
@@ -218,6 +242,18 @@ export default function GeneratePage() {
     )
   }
 
+  const toggleAiImage = (index: number) => {
+    setSelectedAiImages((prev) => {
+      const next = new Set(prev)
+      if (next.has(index)) {
+        next.delete(index)
+      } else {
+        next.add(index)
+      }
+      return next
+    })
+  }
+
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
@@ -269,6 +305,41 @@ export default function GeneratePage() {
           </div>
         )}
 
+        {/* AI Generated Image Thumbnails */}
+        {aiImageUrls.length > 1 && (
+          <div className="max-w-2xl mx-auto mt-6">
+            <label className="font-label text-muted text-[11px] block mb-2">
+              AI Generated Images — click to deselect
+            </label>
+            <div className="flex gap-2 flex-wrap">
+              {aiImageUrls.map((url, i) => (
+                <div
+                  key={i}
+                  className={`relative w-20 h-20 border bg-surface overflow-hidden group cursor-pointer transition-all duration-200 ${
+                    selectedAiImages.has(i)
+                      ? 'border-accent/50'
+                      : 'border-border opacity-40'
+                  }`}
+                  onClick={() => toggleAiImage(i)}
+                >
+                  <img src={url} alt={`AI generated ${i + 1}`} className="w-full h-full object-cover" />
+                  {selectedAiImages.has(i) && (
+                    <button
+                      className="absolute top-0.5 right-0.5 w-4 h-4 bg-background/80 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        toggleAiImage(i)
+                      }}
+                    >
+                      <XIcon size={10} className="text-danger" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Generated posts preview */}
         {generatedPosts.length > 0 && (
           <div className="max-w-4xl mx-auto mt-12">
@@ -306,7 +377,7 @@ export default function GeneratePage() {
         )}
       </main>
 
-      {/* Schedule Modal — reused from dashboard */}
+      {/* Schedule Modal */}
       {schedulePost && (
         <ScheduleModal
           post={schedulePost}
