@@ -1,5 +1,15 @@
-import { BedrockAgentRuntimeClient, InvokeAgentCommand } from "@aws-sdk/client-bedrock-agent-runtime"
+import {
+  BedrockAgentRuntimeClient,
+  InvokeAgentCommand,
+} from '@aws-sdk/client-bedrock-agent-runtime'
 import { Platform } from '@/types'
+import {
+  buildPreprocessingPrompt,
+  buildMainPrompt,
+  buildPostprocessingPrompt,
+} from './prompts'
+
+// ─── Types ─────────────────────────────────────────────────────────
 
 interface GenerateContentInput {
   content_type: 'post' | 'ad'
@@ -22,40 +32,87 @@ interface PlatformContent {
 
 export type GenerateContentResult = Record<string, PlatformContent>
 
+// ─── Helpers ───────────────────────────────────────────────────────
+
 /**
- * Extracts JSON from a string that may contain conversational text around it.
- * Handles nested braces correctly by counting open/close braces.
+ * Safely parse a string that should contain JSON.
+ * Strips markdown fences, finds the outermost JSON object.
  */
-function extractJSON(text: string): string | null {
-  const stripped = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
-  
-  const start = stripped.indexOf('{')
-  if (start === -1) return null
-  
-  let depth = 0
-  for (let i = start; i < stripped.length; i++) {
-    if (stripped[i] === '{') depth++
-    if (stripped[i] === '}') depth--
-    if (depth === 0) {
-      return stripped.substring(start, i + 1)
-    }
+function safeParseJSON(raw: string): Record<string, unknown> {
+  try {
+    const cleaned = raw
+      .replace(/```json/gi, '')
+      .replace(/```/gi, '')
+      .trim()
+    return JSON.parse(cleaned)
+  } catch {
+    const match = raw.match(/\{[\s\S]*\}/)
+    if (match) return JSON.parse(match[0])
+    throw new Error('Failed to parse model response as JSON')
   }
-  return null
 }
+
+import {
+  BedrockRuntimeClient,
+  InvokeModelCommand,
+} from '@aws-sdk/client-bedrock-runtime'
+
+/**
+ * Invoke Bedrock Amazon Nova Pro directly.
+ * We must use Nova instead of Claude because the AWS account lacks a verified payment method 
+ * for Anthropic Marketplace subscriptions.
+ */
+async function invokeNovaModel(opts: {
+  client: BedrockRuntimeClient
+  prompt: string
+  temperature: number
+  max_tokens: number
+}): Promise<string> {
+  const { client, prompt, temperature, max_tokens } = opts
+
+  const command = new InvokeModelCommand({
+    modelId: 'us.amazon.nova-pro-v1:0',
+    contentType: 'application/json',
+    accept: 'application/json',
+    body: JSON.stringify({
+      inferenceConfig: {
+        max_new_tokens: max_tokens,
+        temperature: temperature,
+        top_p: 0.9,
+      },
+      messages: [
+        {
+          role: 'user',
+          content: [{ text: prompt }],
+        },
+      ],
+    }),
+  })
+
+  const response = await client.send(command)
+  const body = JSON.parse(new TextDecoder().decode(response.body))
+  
+  const text = body?.output?.message?.content?.[0]?.text
+  if (!text) {
+    throw new Error('Empty response from Bedrock Nova Model')
+  }
+
+  return text
+}
+
+// ─── Main 3-stage pipeline ─────────────────────────────────────────
 
 export async function generateWithClaude(
   input: GenerateContentInput
 ): Promise<GenerateContentResult> {
-  
   if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
-    throw new Error('AWS credentials (AWS_ACCESS_KEY_ID & AWS_SECRET_ACCESS_KEY) are not set in environment variables.')
+    throw new Error(
+      'AWS credentials (AWS_ACCESS_KEY_ID & AWS_SECRET_ACCESS_KEY) are not set in environment variables.'
+    )
   }
 
-  if (!process.env.BEDROCK_AGENT_ID) {
-    throw new Error('BEDROCK_AGENT_ID is not set in environment variables.')
-  }
-
-  const client = new BedrockAgentRuntimeClient({
+  // Use BedrockRuntimeClient for direct model invocation
+  const client = new BedrockRuntimeClient({
     region: process.env.AWS_REGION || 'us-east-1',
     credentials: {
       accessKeyId: process.env.AWS_ACCESS_KEY_ID,
@@ -63,114 +120,127 @@ export async function generateWithClaude(
     },
   })
 
-  const platformExamples = input.platforms.map(p => {
-    return `"${p}": { "caption": "Your ${p} caption here", "hashtags": ["example"], "image_prompt": "A visual description" }`
-  }).join(',\n    ')
-
-  // Build tone instruction
-  let toneInstruction = `- Tone: ${input.tone}`
-  if (input.tone === 'custom' && input.custom_tone) {
-    toneInstruction = `- Tone guidelines: ${input.custom_tone}`
-  }
-
-  // Build content type instruction
-  let contentTypeInstruction = ''
-  if (input.content_type === 'ad') {
-    contentTypeInstruction = `\n\nIMPORTANT: This is a paid advertisement. Write short punchy copy with a clear CTA. Keep captions under 100 words per platform.`
-  }
-
-  // Build brand voice section
-  let brandVoiceSection = ''
-  if (input.brand_voice_text) {
-    brandVoiceSection = `\n\nBrand voice document:\n${input.brand_voice_text}`
-  }
-
-  // Build brand reference images section
-  let brandRefImagesSection = ''
-  if (input.brand_reference_images && input.brand_reference_images.length > 0) {
-    brandRefImagesSection = `\n\nBrand reference images for visual style: ${input.brand_reference_images.join(', ')}`
-  }
-
-  // Build creativity instruction
   const creativity = input.creativity ?? 0.5
-  const creativityInstruction = `\n\nCreativity level: ${creativity}/1.0. At 0.0 be highly consistent and on-brand. At 1.0 be maximally experimental and unexpected.`
 
-  const userPrompt = `IMPORTANT: You must respond with ONLY a JSON object. No other text before or after.
+  // ── Stage 1: Preprocessing ──────────────────────────────────────
+  console.log('[Pipeline] Stage 1: Preprocessing...')
 
-Generate social media ${input.content_type === 'ad' ? 'ad copy' : 'posts'} for:
-- Topic: ${input.topic}
-${toneInstruction}
-${input.brand_context ? `- Brand context: ${input.brand_context}` : ''}
-- Platforms: ${input.platforms.join(', ')}${contentTypeInstruction}${brandVoiceSection}${brandRefImagesSection}${creativityInstruction}
+  const preprocessingPrompt = buildPreprocessingPrompt(
+    input.topic,
+    input.platforms,
+    input.tone === 'custom' && input.custom_tone ? input.custom_tone : input.tone,
+    input.brand_context,
+    creativity,
+    input.content_type
+  )
 
-Platform rules:
-- LinkedIn: professional, ${input.content_type === 'ad' ? '50-100 words' : '150-300 words'}, 3-5 hashtags
-- Twitter: punchy, under 280 chars, 2-3 hashtags
-- Instagram: visual-first, emoji-friendly, 5-10 hashtags
-- Facebook: conversational, community-oriented, 2-4 hashtags
+  const briefRaw = await invokeNovaModel({
+    client,
+    prompt: preprocessingPrompt,
+    temperature: 0.3, // always low for preprocessing
+    max_tokens: 500,
+  })
 
-Respond with EXACTLY this JSON structure (no other text):
-{
-    ${platformExamples}
-}`
+  console.log('[Pipeline] Stage 1 raw (first 300):', briefRaw.substring(0, 300))
 
-  // Attempt up to 2 tries in case the agent returns conversational text
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const command = new InvokeAgentCommand({
-      agentId: process.env.BEDROCK_AGENT_ID,
-      agentAliasId: process.env.BEDROCK_AGENT_ALIAS_ID || 'TSTALIASID',
-      sessionId: `sf-${Date.now()}-${attempt}`,
-      inputText: attempt === 0 
-        ? userPrompt 
-        : `Return ONLY a raw JSON object with no other text. ${userPrompt}`,
+  let parsedBrief: Record<string, unknown>
+  try {
+    parsedBrief = safeParseJSON(briefRaw)
+  } catch (err) {
+    console.error('[Pipeline] Stage 1 JSON parse failed:', err)
+    throw new Error('Preprocessing stage failed: could not parse creative brief')
+  }
+
+  // ── Stage 2: Main Generation ────────────────────────────────────
+  console.log('[Pipeline] Stage 2: Main generation...')
+
+  const mainPrompt = buildMainPrompt(
+    parsedBrief,
+    input.topic,
+    input.platforms,
+    input.tone === 'custom' && input.custom_tone ? input.custom_tone : input.tone,
+    input.custom_tone,
+    input.brand_voice_text,
+    input.brand_context,
+    creativity,
+    input.content_type
+  )
+
+  let mainRaw: string
+  let mainParsed: Record<string, unknown>
+
+  // First attempt
+  mainRaw = await invokeNovaModel({
+    client,
+    prompt: mainPrompt,
+    temperature: creativity,
+    max_tokens: 1500,
+  })
+
+  console.log('[Pipeline] Stage 2 raw (first 500):', mainRaw.substring(0, 500))
+
+  try {
+    mainParsed = safeParseJSON(mainRaw)
+  } catch {
+    console.warn('[Pipeline] Stage 2 parse failed — retrying with lower temperature')
+    const retryTemp = Math.max(0, creativity - 0.2)
+    const retryPrompt = `Return ONLY a raw JSON object with no conversational text or markdown. ${mainPrompt}`
+
+    mainRaw = await invokeNovaModel({
+      client,
+      prompt: retryPrompt,
+      temperature: retryTemp,
+      max_tokens: 1500,
     })
 
+    console.log('[Pipeline] Stage 2 retry raw (first 500):', mainRaw.substring(0, 500))
+
     try {
-      const response = await client.send(command)
-      
-      let text = ''
-      
-      if (response.completion) {
-        for await (const chunk of response.completion) {
-          if (chunk.chunk?.bytes) {
-            text += new TextDecoder('utf-8').decode(chunk.chunk.bytes)
-          }
-        }
-      }
-
-      if (!text) {
-        console.warn(`Attempt ${attempt + 1}: No content returned from agent`)
-        continue
-      }
-
-      console.log(`Attempt ${attempt + 1} raw agent response (first 500 chars):`, text.substring(0, 500))
-
-      const jsonStr = extractJSON(text)
-      
-      if (!jsonStr) {
-        console.warn(`Attempt ${attempt + 1}: No JSON object found in agent response`)
-        continue
-      }
-
-      const parsed = JSON.parse(jsonStr) as GenerateContentResult
-      
-      const hasValidKeys = input.platforms.some(p => parsed[p] && parsed[p].caption)
-      if (!hasValidKeys) {
-        console.warn(`Attempt ${attempt + 1}: JSON parsed but missing expected platform keys`)
-        continue
-      }
-      
-      return parsed
-    } catch (error) {
-      console.error(`Attempt ${attempt + 1} error:`, error)
-      if (attempt === 1) {
-        if (error instanceof Error) {
-          throw new Error(`Bedrock API error: ${error.message}`)
-        }
-        throw error
-      }
+      mainParsed = safeParseJSON(mainRaw)
+    } catch (err) {
+      console.error('[Pipeline] Stage 2 retry also failed:', err)
+      throw new Error(
+        'Content generation failed: model did not return valid JSON after 2 attempts.'
+      )
     }
   }
 
-  throw new Error('Bedrock Agent did not return valid JSON after 2 attempts. Please try again.')
+  // ── Stage 3: Postprocessing ─────────────────────────────────────
+  console.log('[Pipeline] Stage 3: Postprocessing...')
+
+  const postPrompt = buildPostprocessingPrompt(
+    JSON.stringify(mainParsed, null, 2),
+    input.platforms
+  )
+
+  const cleanedRaw = await invokeNovaModel({
+    client,
+    prompt: postPrompt,
+    temperature: 0.1, // always near-zero for validation
+    max_tokens: 1500,
+  })
+
+  console.log('[Pipeline] Stage 3 raw (first 500):', cleanedRaw.substring(0, 500))
+
+  let finalResult: GenerateContentResult
+  try {
+    finalResult = safeParseJSON(cleanedRaw) as GenerateContentResult
+  } catch (err) {
+    console.error('[Pipeline] Stage 3 JSON parse failed:', err)
+    console.warn('[Pipeline] Falling back to Stage 2 output')
+    finalResult = mainParsed as GenerateContentResult
+  }
+
+  const hasValidKeys = input.platforms.some(
+    (p) => finalResult[p] && finalResult[p].caption
+  )
+  if (!hasValidKeys) {
+    throw new Error(
+      'Generated content is missing expected platform keys. Please try again.'
+    )
+  }
+
+  console.log('[Pipeline] All 3 stages complete. Platforms:', Object.keys(finalResult))
+
+  return finalResult
 }

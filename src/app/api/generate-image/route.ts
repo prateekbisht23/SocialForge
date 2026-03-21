@@ -1,4 +1,4 @@
-import { NextRequest } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
@@ -8,7 +8,7 @@ export async function POST(request: NextRequest) {
     const { prompt, postId, imageCount: rawImageCount } = await request.json()
 
     if (!prompt || !postId) {
-      return Response.json({ error: 'prompt and postId are required' }, { status: 400 })
+      return NextResponse.json({ error: 'prompt and postId are required' }, { status: 400 })
     }
 
     // Validate and clamp imageCount (1-4)
@@ -16,8 +16,13 @@ export async function POST(request: NextRequest) {
 
     const apiKey = process.env.FREEPIK_API_KEY
     if (!apiKey) {
-      return Response.json({ error: 'FREEPIK_API_KEY not configured' }, { status: 500 })
+      return NextResponse.json({ error: 'FREEPIK_API_KEY not configured' }, { status: 500 })
     }
+
+    // Build enhanced Freepik prompt — wrap agent image_prompt with style context
+    const freepikPrompt = `${prompt}
+Additional style requirements: photorealistic render quality, 8K resolution aesthetic, cinematic lighting, premium brand feel consistent with Bloomberg or McKinsey visual standards.
+Color palette: deep navy #0A1628, charcoal #1A1A2E, electric blue #0066FF, cyan accent #00D4FF, white text elements.`.trim()
 
     // Step A: Submit generation task
     const createRes = await fetch('https://api.freepik.com/v1/ai/mystic', {
@@ -27,7 +32,7 @@ export async function POST(request: NextRequest) {
         'x-freepik-api-key': apiKey,
       },
       body: JSON.stringify({
-        prompt,
+        prompt: freepikPrompt,
         resolution: '2k',
         aspect_ratio: 'square_1_1',
         model: 'realism',
@@ -51,13 +56,14 @@ export async function POST(request: NextRequest) {
 
     if (!taskId) {
       console.error('No task_id in Freepik response:', createData)
-      return Response.json({ error: 'Failed to get task_id from Freepik' }, { status: 500 })
+      return NextResponse.json({ error: 'Failed to get task_id from Freepik' }, { status: 500 })
     }
 
     // Step B: Poll for completion with exponential backoff + 429 handling
     const MAX_ATTEMPTS = 12
     const BASE_DELAY = 5000
-    let generatedImages: { url: string }[] = []
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let generatedImages: any[] = []
     let attempts = 0
 
     while (attempts < MAX_ATTEMPTS) {
@@ -90,7 +96,8 @@ export async function POST(request: NextRequest) {
       console.log(`Freepik poll attempt ${attempts}: status = ${status}`)
 
       if (status === 'COMPLETED') {
-        generatedImages = pollData?.data?.generated || []
+        console.log('Freepik completed response:', JSON.stringify(pollData, null, 2))
+        generatedImages = pollData.data?.generated ?? []
         break
       }
 
@@ -108,55 +115,68 @@ export async function POST(request: NextRequest) {
 
     // Step C: Upload all generated images to Supabase Storage
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-      return Response.json({ error: 'Supabase credentials not configured' }, { status: 500 })
+      return NextResponse.json({ error: 'Supabase credentials not configured' }, { status: 500 })
     }
 
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE_KEY
-    )
-
-    const uploadedUrls: string[] = []
+    const results: string[] = []
 
     for (let i = 0; i < generatedImages.length; i++) {
-      const imgUrl = generatedImages[i].url
-      if (!imgUrl) continue
+      try {
+        // generatedImages[i] is a plain string URL, not an object
+        const imageUrl = typeof generatedImages[i] === 'string'
+          ? generatedImages[i]
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          : (generatedImages[i] as any).url ?? (generatedImages[i] as any).base64
 
-      const imageRes = await fetch(imgUrl)
-      const imageBuffer = await imageRes.arrayBuffer()
+        if (!imageUrl) throw new Error('No image URL found in Freepik response')
 
-      const fileName = `${postId}_${i}.jpg`
-      const { error: uploadError } = await supabase.storage
-        .from('post-images')
-        .upload(fileName, Buffer.from(imageBuffer), {
-          upsert: true,
-          contentType: 'image/jpeg',
-        })
+        let buffer: Buffer
 
-      if (uploadError) {
-        console.error(`Supabase upload error for image ${i}:`, uploadError)
-        continue
+        if (imageUrl.startsWith('data:') || !imageUrl.startsWith('http')) {
+          // base64 string
+          const base64 = imageUrl.includes(',') ? imageUrl.split(',')[1] : imageUrl
+          buffer = Buffer.from(base64, 'base64')
+        } else {
+          // regular URL — fetch it
+          const imageRes = await fetch(imageUrl)
+          if (!imageRes.ok) throw new Error(`CDN fetch failed: ${imageRes.status}`)
+          buffer = Buffer.from(await imageRes.arrayBuffer())
+        }
+
+        console.log(`Image ${i} buffer size:`, buffer.byteLength)
+
+        const filePath = `${postId}_${i}.jpg`
+        const supabaseAdmin = createClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL!,
+          process.env.SUPABASE_SERVICE_ROLE_KEY!
+        )
+
+        const { error } = await supabaseAdmin.storage
+          .from('post-images')
+          .upload(filePath, buffer, { contentType: 'image/jpeg', upsert: true })
+
+        if (error) throw new Error(`Supabase upload failed: ${error.message}`)
+
+        const { data: { publicUrl } } = supabaseAdmin.storage
+          .from('post-images')
+          .getPublicUrl(filePath)
+
+        results.push(publicUrl)
+        console.log(`Image ${i} uploaded successfully:`, publicUrl)
+
+      } catch (err) {
+        console.error(`Image ${i} failed:`, err)
       }
-
-      const { data: { publicUrl } } = supabase.storage
-        .from('post-images')
-        .getPublicUrl(fileName)
-
-      uploadedUrls.push(publicUrl)
     }
 
-    if (uploadedUrls.length === 0) {
-      return Response.json({ error: 'All image uploads failed' }, { status: 500 })
+    if (results.length === 0) {
+      throw new Error('All image uploads failed')
     }
 
-    // Return array of URLs (backwards-compatible: also set image_url to first)
-    return Response.json({
-      image_url: uploadedUrls[0],
-      image_urls: uploadedUrls,
-    })
+    return NextResponse.json({ image_url: results[0], image_urls: results })
   } catch (error) {
     console.error('Generate image error:', error)
-    return Response.json(
+    return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Image generation failed' },
       { status: 500 }
     )

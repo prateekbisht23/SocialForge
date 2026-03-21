@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useEffect, useCallback, useState } from 'react'
+import { useRef, useEffect, useCallback } from 'react'
 
 const ITEM_HEIGHT = 40
 const VISIBLE_ITEMS = 5
@@ -11,42 +11,25 @@ interface WheelColumnProps {
   value: number
   onChange: (val: number) => void
   label: string
+  wrap: number // modulus for wrapping (24 for hours, 60 for minutes)
 }
 
-function WheelColumn({ items, value, onChange, label }: WheelColumnProps) {
+function WheelColumn({ items, value, onChange, label, wrap }: WheelColumnProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const isTouching = useRef(false)
-  const touchStartY = useRef(0)
-  const touchStartOffset = useRef(0)
-  const currentOffset = useRef(0)
-  const velocity = useRef(0)
-  const lastTouchY = useRef(0)
-  const lastTouchTime = useRef(0)
+  const outerRef = useRef<HTMLDivElement>(null)
   const animFrame = useRef<number>(0)
-  const isUserScrolling = useRef(false)
+  const currentOffset = useRef(0)
 
   const count = items.length
-
-  // Position: offset in px from top; center item is at offset = -value * ITEM_HEIGHT
-  // We display a virtual window: center ± 2 items, wrapping via modulo
   const getOffset = useCallback((val: number) => -val * ITEM_HEIGHT, [])
 
-  // Snap offset to nearest item
-  const snapToNearest = useCallback((offset: number) => {
-    const rawIndex = Math.round(-offset / ITEM_HEIGHT)
-    // Modulo wrap
-    const index = ((rawIndex % count) + count) % count
-    return index
-  }, [count])
-
-  // Animate to a target offset with deceleration
+  // Animate to a target index with eased cubic out
   const animateTo = useCallback((targetIndex: number) => {
     cancelAnimationFrame(animFrame.current)
     const targetOffset = getOffset(targetIndex)
     const startOffset = currentOffset.current
     const distance = targetOffset - startOffset
 
-    // If very close, just snap
     if (Math.abs(distance) < 1) {
       currentOffset.current = targetOffset
       onChange(targetIndex)
@@ -54,13 +37,12 @@ function WheelColumn({ items, value, onChange, label }: WheelColumnProps) {
       return
     }
 
-    const duration = 300
+    const duration = 200
     const startTime = performance.now()
 
     function tick(now: number) {
       const elapsed = now - startTime
       const progress = Math.min(elapsed / duration, 1)
-      // Ease out cubic
       const eased = 1 - Math.pow(1 - progress, 3)
       currentOffset.current = startOffset + distance * eased
       updateVisuals()
@@ -75,44 +57,20 @@ function WheelColumn({ items, value, onChange, label }: WheelColumnProps) {
     }
 
     animFrame.current = requestAnimationFrame(tick)
-  }, [count, getOffset, onChange])
-
-  // Momentum scrolling after touch release
-  const startMomentum = useCallback(() => {
-    cancelAnimationFrame(animFrame.current)
-    const friction = 0.92
-
-    function tick() {
-      if (Math.abs(velocity.current) < 0.5) {
-        // Snap
-        const idx = snapToNearest(currentOffset.current)
-        animateTo(idx)
-        return
-      }
-      currentOffset.current += velocity.current
-      velocity.current *= friction
-      updateVisuals()
-      animFrame.current = requestAnimationFrame(tick)
-    }
-
-    animFrame.current = requestAnimationFrame(tick)
-  }, [snapToNearest, animateTo])
+  }, [getOffset, onChange])
 
   function updateVisuals() {
     const container = containerRef.current
     if (!container) return
 
     const children = container.children
-    // The offset in the center of the viewport
     const centerVal = -currentOffset.current / ITEM_HEIGHT
 
     for (let i = 0; i < children.length; i++) {
       const child = children[i] as HTMLElement
       const itemIndex = Number(child.dataset.index)
 
-      // Calculate visual position relative to center
       let diff = itemIndex - centerVal
-      // Wrap around for infinite scroll feel
       if (diff > count / 2) diff -= count
       if (diff < -count / 2) diff += count
 
@@ -135,62 +93,26 @@ function WheelColumn({ items, value, onChange, label }: WheelColumnProps) {
     updateVisuals()
   }, [value, getOffset])
 
-  // Mouse wheel handler
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
+  // Non-passive wheel listener to prevent background scroll + handle 1-step-per-event
+  useEffect(() => {
+    const el = outerRef.current
+    if (!el) return
 
-    isUserScrolling.current = true
-    cancelAnimationFrame(animFrame.current)
+    const handler = (e: WheelEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
 
-    const delta = e.deltaY > 0 ? ITEM_HEIGHT : -ITEM_HEIGHT
-    currentOffset.current -= delta
-    const idx = snapToNearest(currentOffset.current)
-    animateTo(idx)
-  }, [snapToNearest, animateTo])
-
-  // Touch handlers
-  const handleTouchStart = useCallback((e: React.TouchEvent) => {
-    isTouching.current = true
-    isUserScrolling.current = true
-    cancelAnimationFrame(animFrame.current)
-    touchStartY.current = e.touches[0].clientY
-    touchStartOffset.current = currentOffset.current
-    lastTouchY.current = e.touches[0].clientY
-    lastTouchTime.current = performance.now()
-    velocity.current = 0
-  }, [])
-
-  const handleTouchMove = useCallback((e: React.TouchEvent) => {
-    if (!isTouching.current) return
-    e.preventDefault()
-
-    const y = e.touches[0].clientY
-    const dy = y - touchStartY.current
-    currentOffset.current = touchStartOffset.current + dy
-
-    const now = performance.now()
-    const dt = now - lastTouchTime.current
-    if (dt > 0) {
-      velocity.current = (y - lastTouchY.current) / dt * 16
+      // Exactly 1 step per scroll event regardless of deltaY magnitude
+      const direction = e.deltaY > 0 ? 1 : -1
+      const newVal = ((value + direction) % wrap + wrap) % wrap
+      onChange(newVal)
     }
-    lastTouchY.current = y
-    lastTouchTime.current = now
 
-    updateVisuals()
-  }, [])
+    el.addEventListener('wheel', handler, { passive: false })
+    return () => el.removeEventListener('wheel', handler)
+  }, [value, onChange, wrap])
 
-  const handleTouchEnd = useCallback(() => {
-    isTouching.current = false
-    if (Math.abs(velocity.current) > 2) {
-      startMomentum()
-    } else {
-      const idx = snapToNearest(currentOffset.current)
-      animateTo(idx)
-    }
-  }, [startMomentum, snapToNearest, animateTo])
-
-  // Cleanup
+  // Cleanup animation frame
   useEffect(() => {
     return () => cancelAnimationFrame(animFrame.current)
   }, [])
@@ -201,12 +123,9 @@ function WheelColumn({ items, value, onChange, label }: WheelColumnProps) {
         {label}
       </span>
       <div
+        ref={outerRef}
         className="relative overflow-hidden select-none"
         style={{ height: WHEEL_HEIGHT, width: 64 }}
-        onWheel={handleWheel}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
       >
         {/* Center highlight line */}
         <div
@@ -228,10 +147,7 @@ function WheelColumn({ items, value, onChange, label }: WheelColumnProps) {
                 top: 0,
                 willChange: 'transform',
               }}
-              onClick={() => {
-                isUserScrolling.current = true
-                animateTo(i)
-              }}
+              onClick={() => animateTo(i)}
             >
               {item}
             </div>
@@ -262,9 +178,9 @@ export default function ScrollWheelTimePicker({
 }: ScrollWheelTimePickerProps) {
   return (
     <div className="flex items-center justify-center gap-3 py-2">
-      <WheelColumn items={hourItems} value={hours} onChange={onHoursChange} label="Hour" />
+      <WheelColumn items={hourItems} value={hours} onChange={onHoursChange} label="Hour" wrap={24} />
       <span className="text-2xl font-mono text-muted/40 self-center mt-4">:</span>
-      <WheelColumn items={minuteItems} value={minutes} onChange={onMinutesChange} label="Min" />
+      <WheelColumn items={minuteItems} value={minutes} onChange={onMinutesChange} label="Min" wrap={60} />
     </div>
   )
 }

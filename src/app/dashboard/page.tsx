@@ -17,10 +17,17 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState<PlatformPostStatus | 'all'>('all')
   const [platformFilter, setPlatformFilter] = useState<Platform | 'all'>('all')
+  const [sortOrder, setSortOrder] = useState<'newest' | 'oldest'>('newest')
+  const [contentTypeFilter, setContentTypeFilter] = useState<'all' | 'post' | 'ad'>('all')
   const [schedulePost, setSchedulePost] = useState<PlatformPost | null>(null)
   const [viewPost, setViewPost] = useState<PlatformPost | null>(null)
   const [editPost, setEditPost] = useState<PlatformPost | null>(null)
   const [animatedPostIds, setAnimatedPostIds] = useState<Set<string>>(new Set())
+
+  // Delete toast error
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  // Fade-out tracking
+  const [fadingPostIds, setFadingPostIds] = useState<Set<string>>(new Set())
 
   const supabase = createClient()
 
@@ -30,12 +37,15 @@ export default function DashboardPage() {
       .select(`
         *,
         posts (
+          id,
           topic,
           tone,
           image_url,
-          user_id
+          user_id,
+          content_type
         )
       `)
+      .or('is_deleted.eq.false,is_deleted.is.null')
       .order('created_at', { ascending: false })
 
     if (error) {
@@ -64,6 +74,11 @@ export default function DashboardPage() {
         },
         (payload) => {
           const updated = payload.new as PlatformPost
+          // If soft-deleted via realtime, remove from UI
+          if (updated.is_deleted) {
+            setPosts((prev) => prev.filter((p) => p.id !== updated.id))
+            return
+          }
           setPosts((prev) =>
             prev.map((p) =>
               p.id === updated.id ? { ...p, ...updated } : p
@@ -100,12 +115,35 @@ export default function DashboardPage() {
     }
   }, [fetchPosts])
 
-  // Filter posts
-  const filteredPosts = posts.filter((p) => {
-    if (statusFilter !== 'all' && p.status !== statusFilter) return false
-    if (platformFilter !== 'all' && p.platform !== platformFilter) return false
-    return true
-  })
+  // Filter + sort posts (client-side)
+  const filteredPosts = posts
+    .filter((p) => {
+      if (statusFilter !== 'all' && p.status !== statusFilter) return false
+      if (platformFilter !== 'all' && p.platform !== platformFilter) return false
+      if (contentTypeFilter !== 'all') {
+        const postContentType = (p as PlatformPost & { posts?: { content_type?: string } }).posts?.content_type
+        if (postContentType && postContentType !== contentTypeFilter) return false
+      }
+      return true
+    })
+    .sort((a, b) => {
+      const dateA = new Date(a.created_at).getTime()
+      const dateB = new Date(b.created_at).getTime()
+      return sortOrder === 'newest' ? dateB - dateA : dateA - dateB
+    })
+
+  const hasActiveFilters =
+    statusFilter !== 'all' ||
+    platformFilter !== 'all' ||
+    sortOrder !== 'newest' ||
+    contentTypeFilter !== 'all'
+
+  const clearAllFilters = () => {
+    setStatusFilter('all')
+    setPlatformFilter('all')
+    setSortOrder('newest')
+    setContentTypeFilter('all')
+  }
 
   // Stats
   const totalPosts = posts.length
@@ -216,6 +254,35 @@ export default function DashboardPage() {
     )
   }
 
+  // Delete handler — per-platform-post soft delete
+  const handleDelete = async (platformPost: PlatformPost) => {
+    const postId = platformPost.id
+    const deletedPost = platformPost
+
+    // Fade out this specific card
+    setFadingPostIds(new Set([postId]))
+
+    // Optimistically remove after animation (400ms)
+    setTimeout(() => {
+      setPosts((prev) => prev.filter((p) => p.id !== postId))
+      setFadingPostIds(new Set())
+    }, 400)
+
+    try {
+      const res = await fetch(`/api/platform-posts/${postId}/delete`, { method: 'PATCH' })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.error || 'Delete failed')
+      }
+    } catch (err) {
+      // Restore card on error
+      setPosts((prev) => [deletedPost, ...prev])
+      setFadingPostIds(new Set())
+      setDeleteError(err instanceof Error ? err.message : 'Delete failed')
+      setTimeout(() => setDeleteError(null), 4000)
+    }
+  }
+
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
@@ -264,9 +331,23 @@ export default function DashboardPage() {
         <FilterBar
           statusFilter={statusFilter}
           platformFilter={platformFilter}
+          sortOrder={sortOrder}
+          contentTypeFilter={contentTypeFilter}
           onStatusChange={setStatusFilter}
           onPlatformChange={setPlatformFilter}
+          onSortChange={setSortOrder}
+          onContentTypeChange={setContentTypeFilter}
+          hasActiveFilters={hasActiveFilters}
+          onClearAll={clearAllFilters}
+          filteredCount={filteredPosts.length}
         />
+
+        {/* Delete error toast */}
+        {deleteError && (
+          <div className="fixed bottom-6 right-6 z-50 px-4 py-3 bg-danger/10 border border-danger/30 text-danger text-sm font-mono animate-fade-in">
+            {deleteError}
+          </div>
+        )}
 
         {/* Grid */}
         {loading ? (
@@ -282,7 +363,7 @@ export default function DashboardPage() {
             </div>
             <h3 className="text-lg font-semibold mb-1">No posts found</h3>
             <p className="text-sm text-muted mb-6">
-              {statusFilter !== 'all' || platformFilter !== 'all'
+              {hasActiveFilters
                 ? 'Try adjusting your filters.'
                 : 'Generate your first piece of content to get started.'}
             </p>
@@ -297,18 +378,24 @@ export default function DashboardPage() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 stagger-children">
             {filteredPosts.map((post) => (
-              <PlatformPostCard
+              <div
                 key={post.id}
-                post={post}
-                onApprove={handleApprove}
-                onReject={handleReject}
-                onSchedule={handleSchedule}
-                onCancelSchedule={handleCancelSchedule}
-                onRestore={handleRestore}
-                onView={handleView}
-                onEdit={handleEdit}
-                animateStatus={animatedPostIds.has(post.id)}
-              />
+                className="h-full"
+                style={fadingPostIds.has(post.id) ? { animation: 'fadeOut 0.4s ease-out forwards' } : {}}
+              >
+                <PlatformPostCard
+                  post={post}
+                  onApprove={handleApprove}
+                  onReject={handleReject}
+                  onSchedule={handleSchedule}
+                  onCancelSchedule={handleCancelSchedule}
+                  onRestore={handleRestore}
+                  onView={handleView}
+                  onEdit={handleEdit}
+                  onDelete={handleDelete}
+                  animateStatus={animatedPostIds.has(post.id)}
+                />
+              </div>
             ))}
           </div>
         )}

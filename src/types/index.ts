@@ -23,10 +23,12 @@ export interface PlatformPost {
   caption: string
   hashtags: string[]
   image_url: string | null
+  image_urls: string[]
   image_prompt: string | null
   status: PlatformPostStatus
   fire_at: string | null
   posted_at: string | null
+  is_deleted: boolean
   created_at: string
   updated_at: string
   posts?: Post

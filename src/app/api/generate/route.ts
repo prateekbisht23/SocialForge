@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server'
 import { generateWithClaude } from '@/lib/claude'
+import { stripMarkdown } from '@/lib/stripMarkdown'
 import { createClient } from '@/lib/supabase/server'
 import { Platform } from '@/types'
 
@@ -62,6 +63,13 @@ export async function POST(request: NextRequest) {
 
     const latency = Date.now() - startTime
 
+    // Strip any markdown that slipped through the pipeline
+    for (const platform of Object.keys(result)) {
+      if (result[platform]?.caption) {
+        result[platform].caption = stripMarkdown(result[platform].caption)
+      }
+    }
+
     // Save to Supabase
     const supabase = await createClient()
 
@@ -93,8 +101,9 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Create platform posts — use first image_url for all platforms
+    // Create platform posts — include image_urls for carousel
     const primaryImageUrl = image_url || (image_urls && image_urls.length > 0 ? image_urls[0] : null)
+    const allImageUrls = image_urls || (primaryImageUrl ? [primaryImageUrl] : [])
 
     const platformPosts = platforms.map((platform) => {
       const content = result[platform]
@@ -104,6 +113,7 @@ export async function POST(request: NextRequest) {
         caption: content?.caption || '',
         hashtags: content?.hashtags || [],
         image_url: primaryImageUrl,
+        image_urls: allImageUrls,
         image_prompt: content?.image_prompt || null,
         status: 'pending' as const,
       }

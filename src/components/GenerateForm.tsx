@@ -295,6 +295,14 @@ export default function GenerateForm({
                 onChange={(e) => {
                   if (e.target.value.length <= 500) setCustomToneText(e.target.value)
                 }}
+                onPaste={(e) => {
+                  const text = e.clipboardData.getData('text/plain')
+                  e.preventDefault()
+                  const start = e.currentTarget.selectionStart
+                  const end = e.currentTarget.selectionEnd
+                  const newValue = customToneText.slice(0, start) + text + customToneText.slice(end)
+                  setCustomToneText(newValue.slice(0, 500))
+                }}
                 placeholder="Describe your brand's tone... e.g. 'Speak like a friendly CFO — confident but approachable, always end with a question to drive engagement'"
                 rows={3}
                 className="w-full px-3 py-2.5 bg-background border border-border text-foreground text-sm placeholder:text-muted/40 focus:border-purple/50 focus:outline-none transition-colors resize-none"
